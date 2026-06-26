@@ -39,9 +39,9 @@ async def async_get_triggers(
     registry = entity_registry.async_get(hass)
     triggers = []
 
-    # Get all the integrations entities for this device
+    # Get all the integration entities for this device
     for entry in entity_registry.async_entries_for_device(registry, device_id):
-        if entry.domain == "media_player":
+        if entry.domain in {"button", "media_player"}:
             triggers.append(
                 {
                     CONF_PLATFORM: "device",

@@ -160,14 +160,16 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
         """Set audio output."""
         await self._player.set_audio_output(audio_output)
 
+    async def async_wake(self, **kwargs: Any) -> None:
+        """Wake the media player."""
+        data = kwargs.get("event_data", {CONF_UNIQUE_ID: self._unique_id})
+        self.hass.bus.async_fire(EVENT_TURN_ON, data)
+        await self._player.turn_on()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the media player on."""
         if self._state == MediaPlayerState.OFF or not self.available:
-            # Try 'zidoo.turn_on' event for automaton control
-            data = kwargs.get("event_data", {CONF_UNIQUE_ID: self._unique_id})
-            self.hass.bus.async_fire(EVENT_TURN_ON, data)
-            # Try API and WOL
-            await self._player.turn_on()
+            await self.async_wake(**kwargs)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off media player."""

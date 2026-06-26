@@ -7,9 +7,9 @@ References:
 
 import asyncio
 from datetime import datetime
+import ipaddress
 import logging
 import socket
-import struct
 import urllib.parse
 
 from aiohttp import ClientError, ClientSession, CookieJar
@@ -312,6 +312,7 @@ class ZidooRC:
                 authorization password key.  If not assigned, standard basic auth is used.
         """
 
+        self._host_name = host
         self._host = f"{host}:{CONF_PORT}"
         self._mac = mac
         self._psk = psk or None
@@ -396,35 +397,62 @@ class ZidooRC:
         """
         return self._cookies is not None
 
-    def _wakeonlan(self) -> None:
+    def _wakeonlan(self) -> bool:
         """Send WOL command. to known mac addresses."""
-        if not self._mac:
-            return
-
-        addr_byte = self._mac.split(":")
-        if len(addr_byte) != 6:
-            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
-            return
-
-        try:
-            hw_addr = struct.pack(
-                "BBBBBB",
-                int(addr_byte[0], 16),
-                int(addr_byte[1], 16),
-                int(addr_byte[2], 16),
-                int(addr_byte[3], 16),
-                int(addr_byte[4], 16),
-                int(addr_byte[5], 16),
-            )
-        except ValueError:
-            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
-            return
+        hw_addr = self._wol_hw_addr()
+        if hw_addr is None:
+            return False
 
         msg = b"\xff" * 6 + hw_addr * 16
-        socket_instance = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        socket_instance.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        socket_instance.sendto(msg, ("<broadcast>", 9))
-        socket_instance.close()
+        sent = False
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as socket_instance:
+            socket_instance.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            for target in self._wol_targets():
+                try:
+                    socket_instance.sendto(msg, target)
+                except OSError as err:
+                    _LOGGER.debug("Failed sending WOL to %s: %s", target, err)
+                else:
+                    sent = True
+
+        return sent
+
+    def _wol_hw_addr(self) -> bytes | None:
+        """Return normalized WOL hardware address bytes."""
+        if not self._mac:
+            _LOGGER.debug("Skipping WOL because no MAC address is configured")
+            return None
+
+        mac = self._mac.strip().replace(":", "").replace("-", "").replace(".", "")
+        if len(mac) != 12:
+            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
+            return None
+
+        try:
+            return bytes.fromhex(mac)
+        except ValueError:
+            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
+            return None
+
+    def _wol_targets(self) -> set[tuple[str, int]]:
+        """Return WOL broadcast targets."""
+        hosts = {"<broadcast>", "255.255.255.255"}
+        try:
+            host_ip = ipaddress.ip_address(self._host_name)
+        except ValueError:
+            host_ip = None
+
+        if isinstance(host_ip, ipaddress.IPv4Address):
+            hosts.add(str(host_ip))
+            hosts.add(
+                str(
+                    ipaddress.ip_network(
+                        f"{host_ip}/24", strict=False
+                    ).broadcast_address
+                )
+            )
+
+        return {(host, port) for host in hosts for port in (7, 9)}
 
     async def _send_key(self, key: str, log_errors: bool = False) -> bool:
         """Async Send Remote Control button command to device.
@@ -1830,8 +1858,9 @@ class ZidooRC:
     async def turn_on(self):
         """Async Turn the media player on."""
         # Try using the power on command incase the WOL doesn't work
-        self._wakeonlan()
-        return await self._send_key(ZKEY_POWER_ON, False)
+        wol_sent = self._wakeonlan()
+        key_sent = await self._send_key(ZKEY_POWER_ON, False)
+        return wol_sent or key_sent
 
     async def turn_off(self, standby=False):
         """Async Turn off media player."""

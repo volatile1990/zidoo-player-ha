@@ -18,7 +18,11 @@ from .const import (
 from .zidooaio import ZidooRC
 
 DATA_SCHEMA = vol.Schema(
-    {vol.Required(CONF_HOST): str, vol.Optional(CONF_PASSWORD): str}
+    {
+        vol.Required(CONF_HOST): str,
+        vol.Optional(CONF_PASSWORD): str,
+        vol.Optional(CONF_MAC): str,
+    }
 )
 
 
@@ -36,7 +40,9 @@ async def validate_input(hass, data):
         await player.disconnect()
 
     if response is not None:
-        mac_id = response.get("net_mac") or response.get("wif_mac")
+        mac_id = (
+            data.get(CONF_MAC) or response.get("net_mac") or response.get("wif_mac")
+        )
         name = response.get("model") or data[CONF_HOST]
 
         return {
@@ -136,6 +142,12 @@ class ZidooOptionsFlowHandler(config_entries.OptionsFlow):
                     default=self.config_entry.options.get(
                         CONF_PASSWORD,
                         self.config_entry.data.get(CONF_PASSWORD, ""),
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_MAC,
+                    default=self.config_entry.options.get(
+                        CONF_MAC, self.config_entry.data.get(CONF_MAC, "")
                     ),
                 ): str,
                 vol.Optional(CONF_SHORTCUT, default=shortcuts): cv.multi_select(

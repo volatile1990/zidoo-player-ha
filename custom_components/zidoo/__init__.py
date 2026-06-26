@@ -11,7 +11,7 @@ from .coordinator import ZidooCoordinator
 from .frontend import ZidooCardRegistration
 from .zidooaio import ZidooRC
 
-PLATFORMS = [Platform.MEDIA_PLAYER, Platform.REMOTE]
+PLATFORMS = [Platform.MEDIA_PLAYER, Platform.REMOTE, Platform.BUTTON]
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
@@ -21,7 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         psk=config_entry.options.get(
             CONF_PASSWORD, config_entry.data.get(CONF_PASSWORD, "")
         ),
-        mac=config_entry.data.get(CONF_MAC, None),
+        mac=config_entry.options.get(CONF_MAC) or config_entry.data.get(CONF_MAC, None),
     )
     coordinator = ZidooCoordinator(hass=hass, player=client, config_entry=config_entry)
 
