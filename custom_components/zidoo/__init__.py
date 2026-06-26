@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_MAC, Platform
+from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 
 from .const import _LOGGER, DOMAIN
@@ -17,7 +17,11 @@ PLATFORMS = [Platform.MEDIA_PLAYER, Platform.REMOTE]
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Set up zidoo from a config entry."""
     client = ZidooRC(
-        config_entry.data[CONF_HOST], mac=config_entry.data.get(CONF_MAC, None)
+        config_entry.data[CONF_HOST],
+        psk=config_entry.options.get(
+            CONF_PASSWORD, config_entry.data.get(CONF_PASSWORD, "")
+        ),
+        mac=config_entry.data.get(CONF_MAC, None),
     )
     coordinator = ZidooCoordinator(hass=hass, player=client, config_entry=config_entry)
 
@@ -35,19 +39,23 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, confid_entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(
-        confid_entry, PLATFORMS
+        config_entry, PLATFORMS
     )
     if unload_ok:
-        hass.data[DOMAIN].pop(confid_entry.entry_id)
+        coordinator: ZidooCoordinator | None = hass.data[DOMAIN].pop(
+            config_entry.entry_id, None
+        )
+        if coordinator is not None:
+            await coordinator.player.disconnect()
 
     # Unload custom card resource if last instance
     other_entries = [
         entry
         for entry in hass.config_entries.async_entries(DOMAIN)
-        if not entry.disabled_by and entry.entry_id != confid_entry.entry_id
+        if not entry.disabled_by and entry.entry_id != config_entry.entry_id
     ]
     if len(other_entries) == 0:
         cards = ZidooCardRegistration(hass, DOMAIN)

@@ -398,8 +398,15 @@ class ZidooRC:
 
     def _wakeonlan(self) -> None:
         """Send WOL command. to known mac addresses."""
-        if self._mac is not None:
-            addr_byte = self._mac.split(":")
+        if not self._mac:
+            return
+
+        addr_byte = self._mac.split(":")
+        if len(addr_byte) != 6:
+            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
+            return
+
+        try:
             hw_addr = struct.pack(
                 "BBBBBB",
                 int(addr_byte[0], 16),
@@ -409,11 +416,15 @@ class ZidooRC:
                 int(addr_byte[4], 16),
                 int(addr_byte[5], 16),
             )
-            msg = b"\xff" * 6 + hw_addr * 16
-            socket_instance = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            socket_instance.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            socket_instance.sendto(msg, ("<broadcast>", 9))
-            socket_instance.close()
+        except ValueError:
+            _LOGGER.debug("Skipping WOL due to invalid MAC address: %s", self._mac)
+            return
+
+        msg = b"\xff" * 6 + hw_addr * 16
+        socket_instance = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        socket_instance.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        socket_instance.sendto(msg, ("<broadcast>", 9))
+        socket_instance.close()
 
     async def _send_key(self, key: str, log_errors: bool = False) -> bool:
         """Async Send Remote Control button command to device.
@@ -541,7 +552,7 @@ class ZidooRC:
                 _LOGGER.warning("[W] Timeout Error: %s", str(err))
 
         else:
-            if response is not None or response.status == 200:
+            if response.status == 200:
                 self._cookies = response.cookies
             return response
 
@@ -666,10 +677,16 @@ class ZidooRC:
                 movie_info["tag"] = result["aggregation"].get("tagLine")
                 release = result["aggregation"].get("releaseDate")
                 if release:
-                    try:
-                        movie_info["date"] = datetime.strptime(release, "%Y-%m-%d" if  "_" in release else '$Y')  
-                    except ValueError:
-                        _LOGGER.debug("skipping date due to bad format!")
+                    for date_format in ("%Y-%m-%d", "%Y"):
+                        try:
+                            movie_info["date"] = datetime.strptime(
+                                release, date_format
+                            )
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        _LOGGER.debug("Skipping date due to bad format: %s", release)
                 tmdb = result["aggregation"].get("tmdbId")
                 if tmdb:
                     movie_info["tmdb_id"] = tmdb
@@ -1821,7 +1838,7 @@ class ZidooRC:
 
     async def mute_volume(self):
         """Async Send mute command."""
-        return self._send_key(ZKEY_MUTE)
+        return await self._send_key(ZKEY_MUTE)
 
     async def media_play(self):
         """Async Send play command."""
@@ -1852,7 +1869,7 @@ class ZidooRC:
         """Async Send the previous track command."""
         if self._current_source == ZCONTENT_MUSIC:
             return await self._req_json("MusicControl/v2/playLast")
-        return self._send_key(ZKEY_MEDIA_PREVIOUS)
+        return await self._send_key(ZKEY_MEDIA_PREVIOUS)
 
     async def set_media_position(self, position):
         """Async Set the current playing position.

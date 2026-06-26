@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_UNIQUE_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.debounce import Debouncer
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import utcnow
 
 from .const import _LOGGER, CONF_POWERMODE, DOMAIN, EVENT_TURN_ON
@@ -44,6 +44,7 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
         self._last_state = MediaPlayerState.OFF
         self._audio_output_list = []
         self._last_audio_output = None
+        self._available = False
 
         super().__init__(
             hass,
@@ -55,9 +56,28 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
             ),
         )
 
+    def _mark_available(self) -> None:
+        """Mark the device as reachable."""
+        if not self._available:
+            _LOGGER.debug("%s is available", self._name)
+        self._available = True
+
+    def _mark_unavailable(self, reason: str | None = None) -> None:
+        """Mark the device as unreachable and clear live state."""
+        if self._available and reason:
+            _LOGGER.debug("%s is unavailable: %s", self._name, reason)
+        self._available = False
+        self._state = MediaPlayerState.OFF
+        self._source = None
+        self._media_type = None
+        self._media_info = {}
+        self._last_audio_output = None
+        self._last_state = MediaPlayerState.OFF
+        self.update_interval = SCAN_INTERVAL
+
     async def async_refresh_audio_outputs(self, force=True):
         """Update audio output list."""
-        if not force and not self._audio_output_list:
+        if force or not self._audio_output_list:
             audio_outputs = await self.player.load_audio_output_list()
             self._audio_output_list = []
             for key in audio_outputs:
@@ -65,7 +85,7 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
 
     async def async_refresh_channels(self, force=True):
         """Update source list."""
-        if not force and not self._source_list:
+        if force or not self._source_list:
             sources = await self.player.load_source_list()
             self._source_list = [ZCONTENT_VIDEO, ZCONTENT_MUSIC]
             for key in sources:
@@ -73,15 +93,16 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
 
     async def _async_update_data(self) -> None:
         """Update data callback."""
-        if not self.player.is_connected():
-            await self.player.connect()
-
-        # Retrieve the latest data.
-        state = MediaPlayerState.OFF
         try:
-            if self.player.is_connected():
-                state = MediaPlayerState.PAUSED
+            if not self.player.is_connected():
+                response = await self.player.connect()
+                if response is None or not self.player.is_connected():
+                    self._mark_unavailable("device is not reachable")
+                    return
 
+            # Retrieve the latest data.
+            state = MediaPlayerState.PAUSED
+            if self.player.is_connected():
                 await self.async_refresh_audio_outputs(force=False)
                 if self._audio_output_list:
                     self._last_audio_output = await self.player.get_audio_output()
@@ -116,8 +137,16 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
                     self._last_update = utcnow()
 
         except Exception as ex:  # noqa: BLE001
-            _LOGGER.debug("update error: {%s}", str(ex))
+            if not self.player.is_connected():
+                self._mark_unavailable(str(ex))
+                return
+            raise UpdateFailed(f"Error updating {self._name}: {ex}") from ex
+
+        if not self.player.is_connected():
+            self._mark_unavailable("connection lost during update")
             return
+
+        self._mark_available()
 
         if state != self._last_state:
             _LOGGER.debug("%s New state (%s)", self._name, state)
@@ -133,7 +162,7 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the media player on."""
-        if self._state == MediaPlayerState.OFF:
+        if self._state == MediaPlayerState.OFF or not self.available:
             # Try 'zidoo.turn_on' event for automaton control
             data = kwargs.get("event_data", {CONF_UNIQUE_ID: self._unique_id})
             self.hass.bus.async_fire(EVENT_TURN_ON, data)
@@ -142,7 +171,7 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off media player."""
-        if self._state != MediaPlayerState.OFF:
+        if self.available and self._state != MediaPlayerState.OFF:
             await self._player.turn_off(
                 self._config_entry.options.get(CONF_POWERMODE, False)
             )
@@ -158,6 +187,11 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
         return self._state
 
     @property
+    def available(self):
+        """Device reachability."""
+        return self._available
+
+    @property
     def media_type(self):
         """Type Current playing media."""
         return self._media_type
@@ -171,7 +205,12 @@ class ZidooCoordinator(DataUpdateCoordinator[None]):
     def audio_output(self):
         """Current audio_output."""
         output_list = self._audio_output_list
-        return output_list[self._last_audio_output] if output_list else None
+        if not output_list or self._last_audio_output is None:
+            return None
+        try:
+            return output_list[self._last_audio_output]
+        except (IndexError, TypeError):
+            return None
 
     @property
     def audio_output_list(self):

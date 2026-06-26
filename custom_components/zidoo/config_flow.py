@@ -29,7 +29,7 @@ async def validate_input(hass, data):
     Data has the keys from DATA_SCHEMA with values provided by the user.
     """
     try:
-        player = ZidooRC(data[CONF_HOST])
+        player = ZidooRC(data[CONF_HOST], psk=data.get(CONF_PASSWORD, ""))
         response = await player.connect()
         await player.disconnect()
     except requests.exceptions.ConnectionError:

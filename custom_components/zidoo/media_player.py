@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import voluptuous as vol
 
 from homeassistant.components import media_source
@@ -134,6 +136,18 @@ class ZidooEntity(CoordinatorEntity[ZidooCoordinator]):
             manufacturer="Zidoo",
             name=config_entry.title,
         )
+
+    @property
+    def available(self) -> bool:
+        """Return if the entity is available."""
+        return super().available and self.coordinator.available
+
+    def _device_event_data(self) -> dict[str, Any]:
+        """Return event data that identifies this entity and device."""
+        data: dict[str, Any] = {ATTR_ENTITY_ID: self.entity_id}
+        if self.device_entry is not None:
+            data[ATTR_DEVICE_ID] = self.device_entry.id
+        return data
 
 
 class ZidooMediaPlayer(ZidooEntity, MediaPlayerEntity):
@@ -288,12 +302,7 @@ class ZidooMediaPlayer(ZidooEntity, MediaPlayerEntity):
 
     async def async_turn_on(self):
         """Turn the media player on."""
-        await self.coordinator.async_turn_on(
-            event_data={
-                ATTR_ENTITY_ID: self.entity_id,
-                ATTR_DEVICE_ID: self.device_entry.id,
-            }
-        )
+        await self.coordinator.async_turn_on(event_data=self._device_event_data())
 
     async def async_turn_off(self):
         """Turn off media player."""

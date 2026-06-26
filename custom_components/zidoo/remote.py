@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Iterable
 from typing import Any
 
+from homeassistant.components.media_player import MediaPlayerState
 from homeassistant.components.remote import (
     ATTR_ACTIVITY,
     ATTR_DELAY_SECS,
@@ -18,7 +19,6 @@ from homeassistant.components.remote import (
     RemoteEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -49,9 +49,9 @@ class ZidooRemote(ZidooEntity, RemoteEntity):
     _attr_activity_list = ZKEYS
 
     @property
-    def state(self):
-        """Return the state of the device."""
-        return self.coordinator.state
+    def is_on(self) -> bool:
+        """Return if the remote is on."""
+        return self.coordinator.state != MediaPlayerState.OFF
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the media player on."""
@@ -59,12 +59,7 @@ class ZidooRemote(ZidooEntity, RemoteEntity):
         if activity:
             await self.async_send_command([activity], **kwargs)
         else:
-            await self.coordinator.async_turn_on(
-                event_data={
-                    ATTR_ENTITY_ID: self.entity_id,
-                    ATTR_DEVICE_ID: self.device_entry.id,
-                }
-            )
+            await self.coordinator.async_turn_on(event_data=self._device_event_data())
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off media player."""
@@ -76,8 +71,10 @@ class ZidooRemote(ZidooEntity, RemoteEntity):
         delay_secs = kwargs.get(ATTR_DELAY_SECS, DEFAULT_DELAY_SECS)
         hold_secs = kwargs.get(ATTR_HOLD_SECS, DEFAULT_HOLD_SECS)
 
+        commands = list(command)
+
         for _ in range(num_repeats):
-            for single_command in command:
+            for single_command in commands:
                 # Not supported : hold and release modes
                 # if hold_secs > 0:
                 #     self._device.send_key(single_command)
@@ -86,7 +83,7 @@ class ZidooRemote(ZidooEntity, RemoteEntity):
                 result = await self.coordinator.player._send_key(single_command)
                 _LOGGER.debug(
                     "send_command %s %d repeats %d delay : %r",
-                    "".join(list(command)),
+                    ",".join(commands),
                     num_repeats,
                     delay_secs,
                     result,
