@@ -374,7 +374,7 @@ class ZidooMediaPlayer(ZidooEntity, MediaPlayerEntity):
             await self.coordinator.player.play_music(
                 media_ids[0], media_type, media_ids[-1]
             )
-        elif "/" in media_type:
+        elif media_type and "/" in media_type:
             await self.coordinator.player.play_stream(media_id, media_type)
         else:
             await self.coordinator.player.play_movie(media_id)

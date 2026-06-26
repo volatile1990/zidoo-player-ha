@@ -1,6 +1,5 @@
 """Config Flow for ZidooMedia Players."""
 
-import requests.exceptions
 import voluptuous as vol
 
 from homeassistant import config_entries, exceptions
@@ -28,20 +27,23 @@ async def validate_input(hass, data):
 
     Data has the keys from DATA_SCHEMA with values provided by the user.
     """
+    player = ZidooRC(data[CONF_HOST], psk=data.get(CONF_PASSWORD, ""))
     try:
-        player = ZidooRC(data[CONF_HOST], psk=data.get(CONF_PASSWORD, ""))
         response = await player.connect()
+    except Exception as err:  # noqa: BLE001
+        raise UnknownError from err
+    finally:
         await player.disconnect()
-    except requests.exceptions.ConnectionError:
-        raise CannotConnect
-    except RuntimeError:
-        raise UnknownError
 
     if response is not None:
-        mac_id = response.get("net_mac")
-        name = response.get("model")
+        mac_id = response.get("net_mac") or response.get("wif_mac")
+        name = response.get("model") or data[CONF_HOST]
 
-        return {"title": name, "mac": mac_id}
+        return {
+            "title": name,
+            "mac": mac_id,
+            "unique_id": mac_id or data[CONF_HOST],
+        }
 
     raise CannotConnect
 
@@ -66,7 +68,7 @@ class ZidooFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Return flow options."""
-        return ZidooOptionsFlowHandler(config_entry)
+        return ZidooOptionsFlowHandler()
 
     async def async_step_user(self, user_input=None):
         """Manage device specific parameters."""
@@ -83,13 +85,14 @@ class ZidooFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
 
             if "base" not in errors:
-                unique_id = str(f"{DOMAIN}-{validated['mac']}")
+                unique_id = str(f"{DOMAIN}-{validated['unique_id']}")
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
 
                 # Add hub name to config
                 user_input[CONF_NAME] = validated["title"]
-                user_input[CONF_MAC] = validated["mac"]
+                if validated["mac"]:
+                    user_input[CONF_MAC] = validated["mac"]
                 return self.async_create_entry(
                     title=validated["title"], data=user_input
                 )
@@ -109,9 +112,8 @@ class ZidooFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 class ZidooOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle a option flow for Zidoo."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        # self.config_entry = config_entry
         self.shortcut_list: dict[str, str] = {
             item["path"]: item["name"] for item in ZSHORTCUTS
         }
@@ -130,7 +132,11 @@ class ZidooOptionsFlowHandler(config_entries.OptionsFlow):
         data_schema = vol.Schema(
             {
                 vol.Optional(
-                    CONF_PASSWORD, default=self.config_entry.data.get(CONF_PASSWORD, "")
+                    CONF_PASSWORD,
+                    default=self.config_entry.options.get(
+                        CONF_PASSWORD,
+                        self.config_entry.data.get(CONF_PASSWORD, ""),
+                    ),
                 ): str,
                 vol.Optional(CONF_SHORTCUT, default=shortcuts): cv.multi_select(
                     self.shortcut_list

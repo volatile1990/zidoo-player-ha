@@ -4,7 +4,6 @@ import logging
 
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.lovelace.const import LOVELACE_DATA
-from homeassistant.helpers.event import async_call_later
 
 _LOGGER = logging.getLogger(__name__)
 

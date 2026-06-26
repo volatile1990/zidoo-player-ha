@@ -68,7 +68,7 @@ def _attach_trigger(
 
     @callback
     def _handle_event(event: Event):
-        if event.data[ATTR_ENTITY_ID] == config[CONF_ENTITY_ID]:
+        if event.data.get(ATTR_ENTITY_ID) == config[CONF_ENTITY_ID]:
             hass.async_run_hass_job(
                 job,
                 {"trigger": {**trigger_data, **config, "description": event_type}},

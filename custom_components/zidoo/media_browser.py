@@ -1,6 +1,7 @@
 """Support for media browsing."""
 
 import contextlib
+from typing import Any
 
 from homeassistant.components import media_source
 from homeassistant.components.media_player import (
@@ -27,39 +28,50 @@ ZTITLE = "Zidoo Media"
 
 async def build_item_response(entity, payload):
     """Create response payload for search described by payload."""
-    search_id = payload["search_id"]
+    search_id = payload.get("search_id") or ""
     search_type = payload["search_type"]
     player = entity.coordinator.player
     is_internal = is_internal_request(entity.hass)
 
-    media_class = ITEM_TYPE_MEDIA_CLASS[search_type]
+    media_class = ITEM_TYPE_MEDIA_CLASS.get(search_type)
+    if media_class is None:
+        raise BrowseError(f"Unsupported Zidoo media type: {search_type}")
+
     child_media_class = None
     children = []
     title = ZTITLE
     thumbnail = None
     result = None
 
+    if not entity.available:
+        return browse_media_payload(
+            title, media_class, search_id, search_type, child_media_class, children
+        )
+
     # File Browser Lists
     if media_class == MediaClass.DIRECTORY:  # file system list
         result = await player.get_file_list(search_id)
-    if media_class == MediaClass.URL:  # smb system list
+    elif media_class == MediaClass.URL:  # smb system list
         result = await player.get_host_list(search_id)
 
     if result is not None and result.get("filelist") is not None:
-        for item in result["filelist"]:
-            content_type = item["type"]
+        for item in result.get("filelist", []):
+            content_type = item.get("type")
             item_type = None
             if content_type is not None and content_type in ZCONTENT_ITEM_TYPE:
                 item_type = ZCONTENT_ITEM_TYPE[content_type]
             if item_type is not None:
                 item_class = ITEM_TYPE_MEDIA_CLASS[item_type]
                 item_thumbnail = None
+                item_id = item.get("path")
+                if item_id is None:
+                    continue
 
                 children.append(
                     BrowseMedia(
-                        title=item["name"],
+                        title=item.get("name") or item_id,
                         media_class=item_class,
-                        media_content_id=item["path"],
+                        media_content_id=item_id,
                         media_content_type=MEDIA_TYPE_FILE,
                         can_play=True,
                         can_expand=item_class == MediaClass.DIRECTORY,
@@ -72,7 +84,7 @@ async def build_item_response(entity, payload):
 
     # Music Library Lists
     elif search_type in ZMUSIC_SEARCH_TYPES:
-        child_media_class = search_type  # should be class
+        child_media_class = ITEM_TYPE_MEDIA_CLASS.get(search_type, media_class)
         if "*" in search_id:
             result = await player.search_music(search_id.replace("*", ""), search_type)
             title = search_id
@@ -81,9 +93,10 @@ async def build_item_response(entity, payload):
             if search_id in ZMUSIC_SEARCH_TYPES:
                 result = await player.get_music_list(search_type)
                 if search_type == MediaType.PLAYLIST:  # convert playlist list
-                    result.insert(0, {"name": "FAVORITES", "id": "favorites"})
-                    result.insert(0, {"name": "PLAYING", "id": "playing"})
-                    result = to_array(result)  # playlist convertor
+                    result_items = get_response_array(result)
+                    result_items.insert(0, {"name": "FAVORITES", "id": "favorites"})
+                    result_items.insert(0, {"name": "PLAYING", "id": "playing"})
+                    result = to_array(result_items)  # playlist converter
                 shortcut = get_shortcut_name(search_id)
                 if shortcut:
                     title = shortcut
@@ -94,17 +107,25 @@ async def build_item_response(entity, payload):
                 )
                 result = await player.get_music_list(search_type, search_id)
 
-        if result and result.get("array"):
+        if result and get_response_array(result):
             can_expand = child_media_class != MediaClass.MUSIC
-            for item in result["array"]:
+            last_data = None
+            for item in get_response_array(result):
+                if not isinstance(item, dict):
+                    continue
                 if item.get("result"):
                     data = item["result"]
                 else:
                     data = item
+                last_data = data
                 item_name = data.get("name")
                 if item_name is None:
-                    item_name = "{} - {}".format(data.get("artist"), data.get("title"))
-                item_id = data["id"]
+                    item_name = "{} - {}".format(
+                        data.get("artist", ""), data.get("title", "")
+                    ).strip(" -")
+                item_id = data.get("id")
+                if item_id is None:
+                    continue
                 item_type = child_media_class
                 item_thumbnail = get_thumbnail_url(
                     item_type, item_id, entity, is_internal
@@ -114,7 +135,7 @@ async def build_item_response(entity, payload):
 
                 children.append(
                     BrowseMedia(
-                        title=item_name,
+                        title=item_name or str(item_id),
                         media_class=media_class,
                         media_content_id=str(item_id),
                         media_content_type=search_type,
@@ -124,11 +145,11 @@ async def build_item_response(entity, payload):
                     )
                 )
 
-            if child_media_class == MediaClass.MUSIC and item:
+            if child_media_class == MediaClass.MUSIC and last_data:
                 if search_type == MediaType.ARTIST:
-                    title = item["artist"]
+                    title = last_data.get("artist", title)
                 if search_type == MediaType.ALBUM:
-                    title = item["album"]
+                    title = last_data.get("album", title)
 
     # Movie/Poster Library Lists
     else:
@@ -148,36 +169,39 @@ async def build_item_response(entity, payload):
 
         if result:  # and result.get("data"):
             video_type = result.get("type")
-            data = result.get("data")  # v1
-            if not data:
-                data = result.get("array")  # v2 (returns empty list if no items)
+            data = result.get("data") or result.get("array") or []
             if video_type:
                 if video_type == 4:  # tv show episodes
                     child_media_class = MediaType.TRACK
                     episodes = await player.get_episode_list(search_id)
-                    if episodes is not None:
+                    if episodes:
                         data = episodes
-                        if data[0].get("parentId") > 0:
+                        parent_id = data[0].get("parentId")
+                        if parent_id and parent_id > 0:
                             thumbnail = get_thumbnail_url(
                                 MediaType.VIDEO,
-                                data[0]["parentId"],
+                                parent_id,
                                 entity,
                                 is_internal,
                             )
             for item in data:
-                child_type = item["type"]
-                item_id = item["id"]
+                if not isinstance(item, dict):
+                    continue
+                child_type = item.get("type")
+                item_id = item.get("id")
                 item_type = search_type
                 if child_type == 0:
                     item_type = MediaType.VIDEO
-                    item_id = item["aggregationId"]
+                    item_id = item.get("aggregationId", item_id)
+                if item_id is None:
+                    continue
                 item_thumbnail = get_thumbnail_url(
                     item_type, item_id, entity, is_internal
                 )
 
                 children.append(
                     BrowseMedia(
-                        title=item["name"],
+                        title=item.get("name") or str(item_id),
                         media_class=media_class,
                         media_content_id=str(item_id),
                         media_content_type=item_type,
@@ -189,12 +213,33 @@ async def build_item_response(entity, payload):
             if result.get("name"):
                 title = result["name"]
 
+    return browse_media_payload(
+        title,
+        media_class,
+        search_id,
+        search_type,
+        child_media_class,
+        children,
+        thumbnail,
+    )
+
+
+def browse_media_payload(
+    title: str,
+    media_class: MediaClass,
+    media_content_id: str,
+    media_content_type: str,
+    children_media_class: MediaClass | None,
+    children: list[BrowseMedia],
+    thumbnail: str | None = None,
+) -> BrowseMedia:
+    """Create a BrowseMedia response."""
     return BrowseMedia(
         title=title,
         media_class=media_class,
-        children_media_class=child_media_class,
-        media_content_id=search_id,
-        media_content_type=search_type,
+        children_media_class=children_media_class,
+        media_content_id=media_content_id,
+        media_content_type=media_content_type,
         can_play=(thumbnail is not None),
         children=children,
         can_expand=True,
@@ -203,24 +248,36 @@ async def build_item_response(entity, payload):
 
 
 def to_data_list(response):
-    """Converts the serach response to a data list."""
+    """Convert the search response to a data list."""
     data_list = []
     if response and response.get("all"):
         for item in response["all"]:
-            data_list.append(item["aggregation"])
+            if not isinstance(item, dict):
+                continue
+            if item.get("aggregation"):
+                data_list.append(item["aggregation"])
     elif response and response.get("tvs"):
         for item in response["tvs"]:
-            data_list.append(item["aggregation"])
+            if not isinstance(item, dict):
+                continue
+            if item.get("aggregation"):
+                data_list.append(item["aggregation"])
     elif response and response.get("movies"):
         for item in response["movies"]:
-            data_list.append(item["aggregation"])
+            if not isinstance(item, dict):
+                continue
+            if item.get("aggregation"):
+                data_list.append(item["aggregation"])
     elif response and response.get("collections"):
         for item in response["collections"]:
-            data_list.append(item["aggregation"])
+            if not isinstance(item, dict):
+                continue
+            if item.get("aggregation"):
+                data_list.append(item["aggregation"])
 
     if data_list:
         return_value = {}
-        return_value["name"] = response["key"]
+        return_value["name"] = response.get("key", ZTITLE)
         return_value["data"] = data_list
 
         return return_value
@@ -228,14 +285,23 @@ def to_data_list(response):
 
 
 def to_array(response):
-    """Wraps response in array feild."""
+    """Wrap response in array field."""
     return_value = {}
     return_value["array"] = response
     return return_value
 
 
+def get_response_array(response: Any) -> list[dict[str, Any]]:
+    """Return an array list from a Zidoo list response."""
+    if isinstance(response, list):
+        return response
+    if isinstance(response, dict):
+        return response.get("array") or []
+    return []
+
+
 def get_shortcut_name(path):
-    """Translates Dohortcut names."""
+    """Translate shortcut names."""
     for item in ZSHORTCUTS:
         if item["path"] == path:
             return item["name"]
@@ -256,15 +322,15 @@ def get_thumbnail_url(media_content_type, media_content_id, entity, is_internal)
             f"/{media_content_type}/{media_content_id}"
         )
 
-    return str(url_path)
+    return str(url_path) if url_path else None
 
 
 def media_source_content_filter(item: BrowseMedia) -> bool:
     """Content filter for media sources."""
     # Filter out cameras using PNG over MJPEG. They don't work in Kodi.
-    return True
     return not (
-        item.media_content_id.startswith("media-source://camera/")
+        isinstance(item.media_content_id, str)
+        and item.media_content_id.startswith("media-source://camera/")
         and item.media_content_type == "image/png"
     )
 
@@ -299,22 +365,27 @@ async def library_payload(entity):
             )
 
     # add zidoo file devices
-    result = await entity.coordinator.player.get_device_list()
-    if result is not None:
+    result = []
+    if entity.available:
+        result = await entity.coordinator.player.get_device_list()
+    if result:
         for item in result:
-            content_type = item["type"]
+            content_type = item.get("type")
             item_type = None
             if content_type is not None and content_type in ZCONTENT_ITEM_TYPE:
                 item_type = ZCONTENT_ITEM_TYPE[content_type]
             if item_type is not None:
                 child_media_class = ITEM_TYPE_MEDIA_CLASS[item_type]
                 item_thumbnail = None
+                item_id = item.get("path")
+                if item_id is None:
+                    continue
 
                 library_info["children"].append(
                     BrowseMedia(
-                        title=item["name"],
+                        title=item.get("name") or item_id,
                         media_class=child_media_class,
-                        media_content_id=item["path"],
+                        media_content_id=item_id,
                         media_content_type=item_type,
                         can_play=False,
                         can_expand=True,

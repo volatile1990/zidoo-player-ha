@@ -19,9 +19,12 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry."""
     coordinator: ZidooCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    device_info = await coordinator.player.get_system_info()
+    device_info = None
+    if coordinator.available:
+        device_info = await coordinator.player.get_system_info(log_errors=False)
 
     return {
         "config_entry": async_redact_data(config_entry.as_dict(), TO_REDACT),
-        "device_info": async_redact_data(device_info, TO_REDACT),
+        "device_available": coordinator.available,
+        "device_info": async_redact_data(device_info or {}, TO_REDACT),
     }

@@ -314,7 +314,7 @@ class ZidooRC:
 
         self._host = f"{host}:{CONF_PORT}"
         self._mac = mac
-        self._psk = psk
+        self._psk = psk or None
         self._session: ClientSession | None = None
         self._cookies = None
         self._content_mapping = []
@@ -622,18 +622,22 @@ class ZidooRC:
         )
 
         if response is not None and response.get("status") == 200:
-            if response.get("subtitle"):
-                self._current_subtitle = response["subtitle"].get("index")
-                return_value["subtitle"] = response["subtitle"].get("information")
-            if response.get("audio"):
-                self._current_audio = response["audio"].get("index")
+            subtitle = response.get("subtitle")
+            if subtitle:
+                self._current_subtitle = subtitle.get("index")
+                return_value["subtitle"] = subtitle.get("information")
+            audio = response.get("audio")
+            if audio:
+                self._current_audio = audio.get("index")
                 # return_value["audio"] = response["audio"].get("information")
-            if response.get("zoom"):
-                self._current_zoom = response["zoom"].get("index")
-                return_value["zoom"] = response["zoom"].get("information")
-            if response.get("playMode"):
-                self._current_playmode = response["playMode"].get("index")
-                return_value["playmode"] = response["playMode"].get("information")
+            zoom = response.get("zoom")
+            if zoom:
+                self._current_zoom = zoom.get("index")
+                return_value["zoom"] = zoom.get("information")
+            play_mode = response.get("playMode")
+            if play_mode:
+                self._current_playmode = play_mode.get("index")
+                return_value["playmode"] = play_mode.get("information")
             if response.get("video"):
                 result = response.get("video")
                 return_value["status"] = result.get("status") == ZSTATE_PLAYING
@@ -672,10 +676,11 @@ class ZidooRC:
             movie_info["type"] = response.get("type")
             result = response.get("movie")
             if result is not None:
+                aggregation = result.get("aggregation", {})
                 movie_id = result.get("id")
                 movie_info["movie_name"] = result.get("name")
-                movie_info["tag"] = result["aggregation"].get("tagLine")
-                release = result["aggregation"].get("releaseDate")
+                movie_info["tag"] = aggregation.get("tagLine")
+                release = aggregation.get("releaseDate")
                 if release:
                     for date_format in ("%Y-%m-%d", "%Y"):
                         try:
@@ -687,22 +692,24 @@ class ZidooRC:
                             continue
                     else:
                         _LOGGER.debug("Skipping date due to bad format: %s", release)
-                tmdb = result["aggregation"].get("tmdbId")
+                tmdb = aggregation.get("tmdbId")
                 if tmdb:
                     movie_info["tmdb_id"] = tmdb
-                imdb = result["aggregation"].get("imdbId")
+                imdb = aggregation.get("imdbId")
                 if imdb:
                     movie_info["imdb_id"] = imdb
             result = response.get("episode")
             if result is not None:
+                aggregation = result.get("aggregation", {})
                 movie_id = result.get("id")
-                movie_info["episode"] = result["aggregation"].get("episodeNumber")
-                movie_info["episode_name"] = result["aggregation"].get("name")
+                movie_info["episode"] = aggregation.get("episodeNumber")
+                movie_info["episode_name"] = aggregation.get("name")
             result = response.get("season")
             if result is not None:
-                movie_info["season"] = result["aggregation"].get("seasonNumber")
-                movie_info["season_name"] = result["aggregation"].get("name")
-                movie_info["series_name"] = result["aggregation"].get("tvName")
+                aggregation = result.get("aggregation", {})
+                movie_info["season"] = aggregation.get("seasonNumber")
+                movie_info["season_name"] = aggregation.get("name")
+                movie_info["series_name"] = aggregation.get("tvName")
             if not movie_id:
                 result = response.get("video")
                 if result is not None:
@@ -870,7 +877,7 @@ class ZidooRC:
         )
 
         if response is not None and response.get("status") == 200:
-            for result in response["subtitles"]:
+            for result in response.get("subtitles", []):
                 index = result.get("index")
                 return_values[index] = result.get("title")
 
@@ -910,7 +917,7 @@ class ZidooRC:
         response = await self._req_json("ZidooVideoPlay/getAudioList")
 
         if response is not None and response.get("status") == 200:
-            for result in response["subtitles"]:
+            for result in response.get("subtitles", []):
                 index = result.get("index")
                 return_values[index] = result.get("title")
 
@@ -948,7 +955,7 @@ class ZidooRC:
         response = await self._req_json("VideoPlay/getZoomList")
 
         if response is not None and response.get("status") == 200:
-            for result in response["zoom"]:
+            for result in response.get("zoom", []):
                 index = result.get("index")
                 return_values[index] = result.get("title")
 
@@ -1058,10 +1065,11 @@ class ZidooRC:
         if response is not None and response.get("status") == 200:
             # update the output list (since we have it)
             output_list = {}
-            for result in response["outputData"]:
+            for result in response.get("outputData", []):
                 if result.get("enable"):
                     name = result.get("name")
-                    output_list[name] = result.get("tag")
+                    if name is not None:
+                        output_list[name] = result.get("tag")
             self._audio_output_list = output_list
 
             # return the index
@@ -1104,10 +1112,11 @@ class ZidooRC:
         )
 
         if response is not None and response.get("status") == 200:
-            for result in response["apps"]:
+            for result in response.get("apps", []):
                 if result.get("isCanOpen"):
                     name = result.get("label")
-                    return_values[name] = result.get("packageName")
+                    if name is not None:
+                        return_values[name] = result.get("packageName")
 
         return return_values
 
@@ -1150,8 +1159,8 @@ class ZidooRC:
         response = await self._req_json("ZidooFileControl/getDevices")
 
         if response is not None and response.get("status") == 200:
-            return response["devices"]
-        return None
+            return response.get("devices", [])
+        return []
 
     async def get_movie_list(
         self, filter_type: int = -1, max_count: int = DEFAULT_COUNT
@@ -1255,8 +1264,8 @@ class ZidooRC:
         response = await self.get_collection_list(movie_id)
 
         if response is not None:
-            for result in response["data"]:
-                if result["type"] == 0:
+            for result in response.get("data", []):
+                if result.get("type") == 0 and result.get("aggregationId"):
                     return result["aggregationId"]
         return movie_id
 
@@ -1712,13 +1721,13 @@ class ZidooRC:
         share_list = []
         if response is not None and response.get("status") == 200:
             return_value["status"] = 200
-            hosts = response["hosts"]
+            hosts = response.get("hosts", [])
             for item in hosts:
                 response = await self.get_file_list(item.get("ip"), item.get("type"))
-                hostname = item.get("name").split("/")[-1]
+                hostname = (item.get("name") or item.get("ip") or "").split("/")[-1]
                 if response is not None and response.get("status") == 200:
-                    for share in response["filelist"]:
-                        share["name"] = hostname + "/" + share.get("name")
+                    for share in response.get("filelist", []):
+                        share["name"] = hostname + "/" + (share.get("name") or "")
                         share_list.append(share)
         return_value["filelist"] = share_list
         return return_value
